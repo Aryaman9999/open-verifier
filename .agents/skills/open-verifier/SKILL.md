@@ -33,7 +33,7 @@ On Failure: Relay the installation instructions to the user and HALT until they 
 
 Phase 2: Syntax Check (Verilator Lint)
 
-Action: Run .agents/skills/open-verifier/scripts/01_lint.sh <path_to_dut>.
+Action: Run .agents/skills/open-verifier/scripts/01_lint.sh
 On Errors:
 
 Report the error/warning clearly to the user.
@@ -61,7 +61,7 @@ Include $monitor statements for all key signals.
 
 Phase 4: Simulation
 
-Action: Run .agents/skills/open-verifier/scripts/02_simulate.sh <dut> <tb>.
+Action: Run .agents/skills/open-verifier/scripts/02_simulate.sh <path_to_tb>
 Analysis: Read the terminal $monitor output and check for:
 
 Correct functional results for each test vector.
