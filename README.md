@@ -1,18 +1,23 @@
 # Open Verifier
 
-An AI-powered VLSI verification skill that turns your coding assistant into a strict, educational digital logic Teaching Assistant.
+An AI-powered VLSI verification skill that turns your coding assistant into an automated end-to-end verification engineer for Verilog and SystemVerilog designs.
 
-Students write Verilog — the assistant lints, scaffolds testbenches, runs simulations, and guides debugging using the **Socratic method**. It never hands out answers.
+You provide the DUT — the agent handles linting, testbench generation, simulation, debugging, and report generation. Fully autonomous, only pausing when it needs your input.
 
-## What It Does
+## How It Works
 
-| Phase | Action |
-|-------|--------|
-| **0 — Environment Check** | Validates that Verilator, Icarus Verilog, and GTKWave are installed |
-| **1 — Lint & Syntax** | Runs Verilator in strict mode to catch errors before simulation |
-| **2 — TB Scaffolding** | Generates a testbench skeleton — students must write the stimulus themselves |
-| **3 — Simulate & Debug** | Compiles and runs via Icarus Verilog, helps debug X/Z states through guided questions |
-| **4 — Waveforms & Report** | Launches GTKWave and generates a structured verification report |
+```
+DUT ──▶ Env Check ──▶ Syntax Lint ──▶ TB Generation ──▶ Simulate ──▶ Report + Waveforms
+         (auto)        (auto)          (auto)            (auto)        (delivered)
+```
+
+| Phase | What Happens |
+|-------|-------------|
+| **1 — Environment Check** | Validates that Verilator, Icarus Verilog, and GTKWave are installed |
+| **2 — Syntax Lint** | Runs Verilator in strict mode; reports issues and offers to auto-fix them |
+| **3 — Testbench Generation** | Generates a complete testbench with full stimulus, edge cases, clock gen, and VCD dump |
+| **4 — Simulation** | Compiles and runs via Icarus Verilog; analyzes output for X/Z states and functional bugs |
+| **5 — Report & Waveforms** | Generates a structured verification report and offers to launch GTKWave |
 
 ## Toolchain
 
@@ -32,6 +37,9 @@ sudo apt update && sudo apt install verilator iverilog gtkwave -y
 brew install verilator icarus-verilog gtkwave
 ```
 
+### Windows
+Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) and install the Linux packages above.
+
 ## Repo Structure
 
 ```
@@ -44,38 +52,35 @@ brew install verilator icarus-verilog gtkwave
 │   └── 03_view_waves.sh  # GTKWave launcher
 ├── resources/
 │   ├── report_template.md
-│   └── waiver.vlt        # Verilator lint waivers for beginners
+│   └── waiver.vlt        # Verilator lint waivers
 └── examples/
     ├── 01_comb_alu.v         # Combinational ALU example
     ├── 01_comb_alu_tb.v
     ├── 02_seq_counter.v      # Sequential counter example
     └── 02_seq_counter_tb.v
-src/    # Your DUT source files go here
-tb/     # Your testbench files go here
-out/    # Simulation outputs (VCD, logs)
+src/    # Place your DUT source files here
+tb/     # Auto-generated testbenches land here
+out/    # Simulation outputs (VCD, logs, reports)
 ```
 
-## How to Use
+## Quick Start
 
-1. Clone this repo and open it in an AI coding assistant that supports skills (e.g., Antigravity)
-2. Place your Verilog DUT in `src/`
+1. Clone this repo and open it in an AI coding assistant that supports skills (e.g., Gemini CLI, Antigravity)
+2. Place your Verilog/SystemVerilog DUT in `src/`
 3. Ask the assistant to **verify**, **test**, or **simulate** your design
-4. The skill activates automatically — it will lint your code, scaffold a testbench, and guide you through the full verification flow
+4. The skill activates automatically — it checks your environment, lints the code, generates a testbench, runs simulation, and delivers a verification report
 
 ## Examples Included
 
 - **Combinational ALU** (`examples/01_comb_alu.v`) — 4-bit ALU with add, subtract, AND, OR
 - **Sequential Counter** (`examples/02_seq_counter.v`) — 8-bit counter with synchronous reset and enable
 
-## Philosophy
+## What Makes This Different
 
-This skill is deliberately **not** a code generator. It follows a teaching-first approach:
-
-- **Linting errors?** It explains the concept and asks a guiding question
-- **Testbench needed?** It scaffolds the structure but forces students to write the test vectors
-- **Simulation bugs?** It helps trace X/Z states backward instead of giving the fix
-
-The goal is to build verification intuition, not copy-paste habits.
+- **Fully automated** — the agent writes the entire testbench, not just a skeleton
+- **Self-correcting** — if syntax issues are found, it offers to fix them and re-lint
+- **Complete reports** — every run produces a structured verification report with pass/fail status and coverage details
+- **Waveform ready** — VCD files are generated automatically; GTKWave launch is one confirmation away
 
 ## License
 
