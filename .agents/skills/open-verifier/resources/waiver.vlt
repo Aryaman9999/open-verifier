@@ -1,0 +1,6 @@
+`verilator_config
+// Students often name files differently from modules (e.g. src/my_alu.v but module alu).
+// This turns off the fatal error for filename mismatches.
+lint_off -rule DECLFILENAME
+// Turn off warnings for implicit wires, as Icarus handles them fine for beginners
+lint_off -rule IMPLICIT

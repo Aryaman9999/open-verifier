@@ -1,0 +1,13 @@
+# Simulation outputs
+out/*.vvp
+out/*.vcd
+out/*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
