@@ -2,7 +2,7 @@
 
 An AI-powered VLSI verification skill that turns your coding assistant into an automated end-to-end verification engineer for Verilog and SystemVerilog designs.
 
-You provide the DUT — the agent handles linting, testbench generation, simulation, debugging, and report generation. Fully autonomous, only pausing when it needs your input.
+You provide the DUT - the agent handles linting, testbench generation, simulation, debugging, and report generation. Fully autonomous, only pausing when it needs your input.
 
 ## How It Works
 
@@ -72,16 +72,16 @@ out/    # Simulation outputs (VCD, logs, reports)
 
 ## Examples Included
 
-- **Combinational ALU** (`examples/01_comb_alu.v`) — 4-bit ALU with add, subtract, AND, OR
-- **Sequential Counter** (`examples/02_seq_counter.v`) — 8-bit counter with synchronous reset and enable
+- **Combinational ALU** (`examples/01_comb_alu.v`) - 4-bit ALU with add, subtract, AND, OR
+- **Sequential Counter** (`examples/02_seq_counter.v`) - 8-bit counter with synchronous reset and enable
 
 ## What Makes This Different
 
-- **Fully automated** — the agent writes the entire testbench, not just a skeleton
-- **Self-correcting** — if syntax issues are found, it offers to fix them and re-lint
-- **Complete reports** — every run produces a structured verification report with pass/fail status and coverage details
-- **Waveform ready** — VCD files are generated automatically; GTKWave launch is one confirmation away
+- **Fully automated** - the agent writes the entire testbench, not just a skeleton
+- **Self-correcting** - if syntax issues are found, it offers to fix them and re-lint
+- **Complete reports** - every run produces a structured verification report with pass/fail status and coverage details
+- **Waveform ready** - VCD files are generated automatically; GTKWave launch is one confirmation away
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT - see [LICENSE](./LICENSE).
