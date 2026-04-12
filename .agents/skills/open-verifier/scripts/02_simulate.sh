@@ -30,5 +30,18 @@ echo "Running Simulation via VVP engine..."
 vvp out/sim.vvp | tee out/sim_output.log
 
 echo "--------------------------------------------------------"
+echo "Analysing simulation output for anomalies..."
+
+# Check for X (unknown) or Z (high-impedance) states in signal output
+# Matches common $monitor/$display patterns like: x, X, z, Z, xxxx, zzzz
+if grep -qiE "(^|\s|=)[xz][xz0-9]*(\s|$|,)" out/sim_output.log; then
+    echo "ANOMALY_DETECTED: Possible X or Z states found in simulation output."
+    echo "ANOMALY_DETAIL: Review out/sim_output.log for lines containing x/z values."
+    echo "AGENT_ACTION_REQUIRED: Diagnose root cause - check reset logic, undriven signals, or uninitialised registers in the DUT."
+else
+    echo "ANOMALY_CHECK: No X/Z states detected in simulation output."
+fi
+
+echo "--------------------------------------------------------"
 echo "Simulation complete. Output logged to out/sim_output.log"
 exit 0

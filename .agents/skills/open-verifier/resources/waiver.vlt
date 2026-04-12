@@ -4,3 +4,7 @@
 lint_off -rule DECLFILENAME
 // Turn off warnings for implicit wires, as Icarus handles them fine for beginners
 lint_off -rule IMPLICIT
+// Turn off warnings for missing endfile newline
+lint_off -rule EOFNEWLINE
+lint_off -rule UNUSED
+lint_off -rule UNDRIVEN

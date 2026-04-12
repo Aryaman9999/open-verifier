@@ -34,30 +34,71 @@ On Failure: Relay the installation instructions to the user and HALT until they 
 Phase 2: Syntax Check (Verilator Lint)
 
 Action: Run .agents/skills/open-verifier/scripts/01_lint.sh
-On Errors:
 
-Report the error/warning clearly to the user.
+On Clean Pass: Proceed to Phase 3.
 
-Ask: "I found an issue. Would you like me to attempt to fix it?"
+On Warnings or Errors:
+  STOP. Do NOT proceed to Phase 3. Do NOT modify any file yet.
 
-If the user agrees, fix the DUT code, re-run the lint script, and confirm it passes.
+  For each issue found, present it to the user in this exact format:
 
-If the user declines, HALT and wait for them to fix it manually.
+  ---
+  🔴 ISSUE FOUND IN `src/<filename>` — Line <N>
+  **Type:** [Error / Warning]
+  **Message:** [Exact Verilator output]
+  **What this means:** [Plain English explanation of what is wrong]
+  **Suggested Fix:**
+```verilog
+  // BEFORE
+  <original offending code>
 
-Phase 3: Testbench Generation (Full Automation)
+  // AFTER
+  <suggested corrected code>
+```
+  **Why this fix works:** [One sentence explanation]
+  ---
 
-Action: Once lint is clean and the environment is ready, generate a COMPLETE testbench in the tb/ directory (e.g., tb/dut_tb.v).
-Requirements:
+  After presenting ALL issues (not one at a time), ask:
+  "I've listed all the issues and my suggested fixes above.
+   Would you like me to apply these fixes now? (yes / no / apply only #N)"
 
-Timescale, signal declarations, DUT instantiation, VCD dump setup ($dumpfile("out/waves.vcd"); $dumpvars(0, tb_name);).
+  - If YES: Apply all suggested fixes to the DUT file(s), re-run lint,
+    and confirm it now passes before proceeding to Phase 3.
+  - If NO: HALT. Inform the user:
+    "No changes made. Fix the issues manually and re-run the verifier."
+  - If APPLY ONLY #N: Apply only the specified fix(es), re-run lint,
+    and report the updated status. If issues remain, repeat this block.
 
-Clock generation if the DUT has a clk input.
+  IMPORTANT: Never silently modify a DUT file at any point in the workflow.
+  The DUT is the student's own work. Changes require explicit confirmation.
 
-Full stimulus covering every operation/branch in the DUT. Do NOT leave it blank.
+Phase 3: Testbench Handling
 
-Include edge cases (zero inputs, max values, overflow conditions).
+Pre-check: Before generating anything, scan the `tb/` directory for existing `.v` or `.sv` files.
 
-Include $monitor statements for all key signals.
+If an existing TB is found:
+  - List the found file(s) to the user.
+  - Ask: "I found an existing testbench: `tb/<filename>`. Would you like me to:
+    (A) Use it as-is,
+    (B) Review and improve it, or
+    (C) Discard it and generate a fresh one?"
+  - If A: Proceed directly to Phase 4 using the existing TB.
+  - If B: Read the TB, identify gaps (missing edge cases, no $dumpvars,
+    no $finish, incomplete stimulus), summarise what you found, make
+    the improvements, confirm with the user, then proceed to Phase 4.
+  - If C: Delete or rename the existing file (e.g. tb/<name>_original.v),
+    generate a new TB per the requirements below, then proceed to Phase 4.
+
+If no existing TB is found (full generation):
+  Action: Generate a COMPLETE testbench in the tb/ directory (e.g., tb/dut_tb.v).
+  Requirements:
+  - Timescale, signal declarations, DUT instantiation, VCD dump setup
+    ($dumpfile("out/waves.vcd"); $dumpvars(0, tb_name);).
+  - Clock generation if the DUT has a clk input.
+  - Full stimulus covering every operation/branch in the DUT. Do NOT leave it blank.
+  - Include edge cases (zero inputs, max values, overflow conditions).
+  - Include $monitor statements for all key signals.
+  - Always end with a $finish statement to prevent simulation hang.
 
 Phase 4: Simulation
 
