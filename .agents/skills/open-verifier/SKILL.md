@@ -26,6 +26,24 @@ Script Execution & Paths: All scripts are located at .agents/skills/open-verifie
 
 Workflow Execution Phases
 
+Pre-Phase: Design Topology Check
+
+Before any lint or simulation step, scan `src/` recursively for `.v` and `.sv` files.
+If source files are found in subdirectories (not just flat in `src/`):
+
+1. List the discovered module hierarchy to the user, e.g.:
+   ```
+   src/top.v
+   src/alu/alu.v
+   src/regfile/regfile.v
+   src/control/ctrl.v
+   ```
+2. Identify the probable top-level module (the one that instantiates others but is not instantiated itself).
+3. Confirm with the user: "I found a hierarchical design with the following structure: [list]. Is `<module_name>` the top-level DUT?"
+4. Use recursive file discovery (`find src/ -name "*.v" -o -name "*.sv"`) for ALL subsequent script calls. The scripts already do this internally, but confirm the full file list is being passed.
+
+If all source files are flat in `src/` (no subdirectories), skip this confirmation and proceed directly.
+
 Phase 1: Environment Check
 
 Action: Run .agents/skills/open-verifier/scripts/00_check_env.sh.
@@ -99,6 +117,15 @@ If no existing TB is found (full generation):
   - Include edge cases (zero inputs, max values, overflow conditions).
   - Include $monitor statements for all key signals.
   - Always end with a $finish statement to prevent simulation hang.
+
+  Hierarchical DUT guidance:
+  For designs with sub-modules, read ALL source files in `src/` (recursively)
+  before generating the testbench — not just the top-level ports. Understand:
+  - Reset propagation: how does reset flow from top to sub-modules?
+  - Clock distribution: are there clock dividers or gating inside sub-modules?
+  - Internal interfaces: what signals pass between sub-modules?
+  Use this understanding to generate meaningful stimulus that exercises the full
+  design, not just the top-level port connections.
 
 Phase 4: Simulation
 

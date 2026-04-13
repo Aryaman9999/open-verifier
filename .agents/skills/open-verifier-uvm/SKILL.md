@@ -58,9 +58,37 @@ And set in Makefile: `WAVES ?= 1`
 
 **Script Execution & Paths:** All scripts are located at `.agents/skills/open-verifier-uvm/scripts/`. ALWAYS invoke scripts using `bash` (e.g., `bash .agents/skills/open-verifier-uvm/scripts/01_simulate_cocotb.sh <args>`) to avoid permission issues. Do NOT rely on execute permissions or chmod.
 
+**HIERARCHICAL SIGNAL ACCESS (cocotb):** cocotb uses dot notation to traverse
+the DUT hierarchy: `dut.submodule.signal_name`. For hierarchical designs, you
+MUST map the full module tree before generating testbench code, otherwise
+`AttributeError` will be raised at runtime when accessing sub-module signals.
+- Top-level signals: `dut.clk`, `dut.rst`, `dut.data_in`
+- Sub-module signals: `dut.alu_inst.result`, `dut.regfile_inst.rd_data`
+- The instance name (not module name) is what matters in the dot path.
+  Check the DUT source for the actual instance names used in instantiation.
+
 ---
 
 ## Workflow Execution Phases
+
+### Pre-Phase: Design Topology Check
+
+Before any lint or simulation step, scan `src/` recursively for `.v` and `.sv` files.
+If source files are found in subdirectories (not just flat in `src/`):
+
+1. List the discovered module hierarchy to the user, e.g.:
+   ```
+   src/top.v
+   src/alu/alu.v
+   src/regfile/regfile.v
+   src/control/ctrl.v
+   ```
+2. Identify the probable top-level module (the one that instantiates others but is not instantiated itself).
+3. Confirm with the user: "I found a hierarchical design with the following structure: [list]. Is `<module_name>` the top-level DUT?"
+4. Map the instance names used in instantiation — these are needed for cocotb dot-notation signal access (e.g., `dut.alu_inst.result` not `dut.alu.result`).
+5. Use recursive file discovery for ALL subsequent script calls.
+
+If all source files are flat in `src/` (no subdirectories), skip this confirmation and proceed directly.
 
 ### Phase 1: Environment Check
 Action: Run `.agents/skills/open-verifier-uvm/scripts/00_check_env_uvm.sh`
@@ -103,6 +131,17 @@ Generate a complete pyUVM testbench in `uvm_tb/<dut_name>/` containing:
 
 3. Include `cocotb.log` statements at key points so the agent can read
    pass/fail status from simulation output.
+
+Hierarchical DUT guidance:
+For designs with sub-modules, read ALL source files in `src/` (recursively)
+before generating the testbench — not just the top-level ports. Understand:
+- Reset propagation: how does reset flow from top to sub-modules?
+- Clock distribution: are there clock dividers or gating inside sub-modules?
+- Internal interfaces: what signals pass between sub-modules?
+- Instance names: map `module_name` → `instance_name` so cocotb dot paths
+  are correct (e.g., `dut.alu_inst.result` not `dut.alu.result`).
+Use this understanding to generate meaningful stimulus and correct signal
+references that exercise the full design hierarchy.
 
 ### Phase 4: Simulation
 Action: Run `.agents/skills/open-verifier-uvm/scripts/01_simulate_cocotb.sh uvm_tb/<dut_name>/`

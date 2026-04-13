@@ -6,9 +6,8 @@ echo "Running Verilator Lint on all src files..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 WAIVER_FILE="$SCRIPT_DIR/../resources/waiver.vlt"
 
-# Create an array of all Verilog files in src directory
-shopt -s nullglob
-SRC_FILES=(src/*.v src/*.sv)
+# Recursively find all Verilog files in src/ (supports hierarchical designs)
+SRC_FILES=($(find src/ -name "*.v" -o -name "*.sv"))
 
 if [ ${#SRC_FILES[@]} -eq 0 ]; then
     echo "Error: No .v or .sv files found in src/"
