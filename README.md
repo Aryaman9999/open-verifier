@@ -82,6 +82,24 @@ out/    # Simulation outputs (VCD, logs, reports)
 - **Complete reports** — every run produces a structured verification report with pass/fail status and coverage details
 - **Waveform ready** — VCD files are generated automatically; GTKWave launch is one confirmation away
 
+## UVM Tier (Branch: `feature/cocotb-pyuvm`)
+
+A second verification tier is available on the `feature/cocotb-pyuvm` branch,
+adding full UVM methodology support via cocotb + pyUVM.
+
+| Feature | master (Tier 1) | feature/cocotb-pyuvm (Tier 2) |
+|---|---|---|
+| Testbench language | Verilog/SystemVerilog | Python |
+| Methodology | Module-based | Full UVM (sequences, driver, monitor, scoreboard) |
+| Simulation backend | Icarus Verilog | Icarus Verilog via cocotb |
+| UVM classes | No | Yes (pyUVM) |
+| Best for | Beginners | Intermediate / UVM methodology learners |
+
+### Additional Install (UVM Tier)
+```bash
+pip3 install cocotb pyuvm
+```
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
