@@ -1,105 +1,51 @@
-# Open Verifier
+# Open-Verifier v2 🚀
 
-An AI-powered VLSI verification skill that turns your coding assistant into an automated end-to-end verification engineer for Verilog and SystemVerilog designs.
+An autonomous, agentic toolchain for end-to-end VLSI verification. Open-Verifier automates the journey from a hardware specification PDF and RTL source code to a comprehensive UVM-based verification environment and simulation report.
 
-You provide the DUT — the agent handles linting, testbench generation, simulation, debugging, and report generation. Fully autonomous, only pausing when it needs your input.
+## 🏛 Architectural Philosophy
 
-## How It Works
+Open-Verifier is built on a **Black-Box Verification Standard**. To maintain strict verification integrity, the agent is prohibited from reading source code in `src/`. Instead, it interacts with the design through structured metadata and elaborated artifacts.
 
-```
-DUT ──▶ Env Check ──▶ Syntax Lint ──▶ TB Generation ──▶ Simulate ──▶ Report + Waveforms
-         (auto)        (auto)          (auto)            (auto)        (delivered)
-```
+### 🔍 Key Features
 
-| Phase | What Happens |
-|-------|-------------|
-| **1 — Environment Check** | Validates that Verilator, Icarus Verilog, and GTKWave are installed |
-| **2 — Syntax Lint** | Runs Verilator in strict mode; reports issues and offers to auto-fix them |
-| **3 — Testbench Generation** | Generates a complete testbench with full stimulus, edge cases, clock gen, and VCD dump |
-| **4 — Simulation** | Compiles and runs via Icarus Verilog; analyzes output for X/Z states and functional bugs |
-| **5 — Report & Waveforms** | Generates a structured verification report and offers to launch GTKWave |
+- **AST-Driven Elaboration**: Uses Verilator XML AST parsing to extract design interfaces. This ensures the agent understands the DUT boundaries (ports, widths, types) without ever "seeing" the implementation logic, maintaining a true black-box stimulus/response relationship.
+- **Intelligent Agentic Pagination**: Employs context-aware retrieval to fetch adjacent PDF pages when diagrams or rules span page boundaries. This prevents "fragmented context" errors and ensures protocol rules are complete and accurate.
+- **Reliability-First Generation**: Testbench components are generated one file at a time, strictly adhering to **Output Token Limits**. This modular approach prevents truncation errors and ensures every class, method, and constraint is fully implemented.
+- **Interactive Binding Map**: A dedicated human-in-the-loop phase where spec signal names are mapped to DUT ports. This prevents the "naming mismatch" common in automated tools and ensures the testbench drives the correct physical wires.
+- **Toggle Coverage Post-Processor**: A pure-Python VCD parser (`08_toggle_coverage.py`) that automatically appends a signal transition table to your verification report. It identifies untoggled ports to guide iterative sequence generation.
+- **Robust X-Propagation Handling**: Integrated protocol for Icarus Verilog and Verilator that pre-drives all DUT inputs to `0` before reset release. This stops 'X' states from entering the design and causing spurious simulation failures.
 
-## Toolchain
+## 🛠 Technology Stack
 
-| Tool | Purpose |
-|------|---------|
-| [Verilator](https://www.veripool.org/verilator/) | Linting & syntax checking |
-| [Icarus Verilog](http://iverilog.icarus.com/) | Simulation engine |
-| [GTKWave](https://gtkwave.sourceforge.net/) | Waveform viewer |
+- **Core**: Python 3.12+, Bash
+- **Verification Framework**: `cocotb`, `pyuvm` 2.8.0
+- **Simulation**: Icarus Verilog (`iverilog`), Verilator
+- **Analysis**: PyMuPDF (`fitz`) for Structural PDF Parsing, Verilator XML for AST Elaboration, Custom VCD Parser for Toggle Coverage.
+- **Formal**: Yosys, SymbiYosys (SBY), Z3
 
-### Install (Linux)
-```bash
-sudo apt update && sudo apt install verilator iverilog gtkwave -y
-```
+## 📖 Workflow Architecture
 
-### Install (macOS)
-```bash
-brew install verilator icarus-verilog gtkwave
-```
+The toolchain follows a deterministic 20-step verification pipeline:
 
-### Windows
-Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) and install the Linux packages above.
+1. **Environment Check**: Validates binaries and python packages.
+2. **Filelist Generation**: Scans for source files recursively.
+3. **AST Elaboration**: Enforces the black-box boundary via XML export.
+4. **Agentic Spec Extraction**: Context-aware rule parsing from PDF.
+5. **Binding Review**: Human-validated spec-to-DUT mapping.
+6. **TB Generation**: Layered UVM file creation (modular for token-limit safety).
+7. **Simulation**: Execution of constrained random tests.
+8. **Toggle Analysis**: VCD-based structural verification.
+9. **Final Reporting**: Automated generation of markdown-based verification summaries.
 
-## Repo Structure
+## 🚀 Getting Started
 
-```
-.agents/skills/open-verifier/
-├── SKILL.md              # Skill definition & workflow rules
-├── scripts/
-│   ├── 00_check_env.sh   # Environment validator
-│   ├── 01_lint.sh        # Verilator lint runner
-│   ├── 02_simulate.sh    # Icarus compile + VVP simulation
-│   └── 03_view_waves.sh  # GTKWave launcher
-├── resources/
-│   ├── report_template.md
-│   └── waiver.vlt        # Verilator lint waivers
-└── examples/
-    ├── 01_comb_alu.v         # Combinational ALU example
-    ├── 01_comb_alu_tb.v
-    ├── 02_seq_counter.v      # Sequential counter example
-    └── 02_seq_counter_tb.v
-src/    # Place your DUT source files here
-tb/     # Auto-generated testbenches land here
-out/    # Simulation outputs (VCD, logs, reports)
-```
+1. Place Verilog/SystemVerilog source files in `src/`.
+2. Provide a protocol specification PDF in the root.
+3. Run initialization:
+   ```bash
+   bash .agents/skills/open-verifier/scripts/00_check_env.sh
+   ```
 
-## Quick Start
+---
 
-1. Clone this repo and open it in an AI coding assistant that supports skills (e.g., Gemini CLI, Antigravity)
-2. Place your Verilog/SystemVerilog DUT in `src/`
-3. Ask the assistant to **verify**, **test**, or **simulate** your design
-4. The skill activates automatically — it checks your environment, lints the code, generates a testbench, runs simulation, and delivers a verification report
-
-## Examples Included
-
-- **Combinational ALU** (`examples/01_comb_alu.v`) — 4-bit ALU with add, subtract, AND, OR
-- **Sequential Counter** (`examples/02_seq_counter.v`) — 8-bit counter with synchronous reset and enable
-
-## What Makes This Different
-
-- **Fully automated** — the agent writes the entire testbench, not just a skeleton
-- **Self-correcting** — if syntax issues are found, it offers to fix them and re-lint
-- **Complete reports** — every run produces a structured verification report with pass/fail status and coverage details
-- **Waveform ready** — VCD files are generated automatically; GTKWave launch is one confirmation away
-
-## UVM Tier (Branch: `feature/cocotb-pyuvm`)
-
-A second verification tier is available on the `feature/cocotb-pyuvm` branch,
-adding full UVM methodology support via cocotb + pyUVM.
-
-| Feature | master (Tier 1) | feature/cocotb-pyuvm (Tier 2) |
-|---|---|---|
-| Testbench language | Verilog/SystemVerilog | Python |
-| Methodology | Module-based | Full UVM (sequences, driver, monitor, scoreboard) |
-| Simulation backend | Icarus Verilog | Icarus Verilog via cocotb |
-| UVM classes | No | Yes (pyUVM) |
-| Best for | Beginners | Intermediate / UVM methodology learners |
-
-### Additional Install (UVM Tier)
-```bash
-pip3 install cocotb pyuvm
-```
-
-## License
-
-MIT — see [LICENSE](./LICENSE).
+*Open-Verifier v2 — Autonomous, Black-Box, Scalable Verification.*
