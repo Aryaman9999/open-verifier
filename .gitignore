@@ -11,3 +11,17 @@ Thumbs.db
 *.swp
 *.swo
 *~
+#instructions file
+instructions.md
+
+# Open Verifier v2
+out/verilator_build/
+out/spec_pages/
+out/.formal_available
+out/formal_result.json
+out/waves.vcd
+uvm_tb/__pycache__/
+uvm_tb/*.pyc
+uvm_tb/sim_build/
+uvm_tb/results.xml
+uvm_tb/formal/verify/
