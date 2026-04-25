@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # 07_run_formal.sh — Runs SymbiYosys, parses output, feeds error taxonomy.
 #
-# After cloning, make this file executable:
-#   chmod +x .agents/skills/open-verifier/scripts/07_run_formal.sh
-#
 # Usage:
-#   bash .agents/skills/open-verifier/scripts/07_run_formal.sh
+#   bash -l -c "source ~/oss-cad-suite/environment && bash .agents/skills/open-verifier/scripts/07_run_formal.sh"
 
 set -e
 
@@ -15,25 +12,33 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 FORMAL_DIR="$REPO_ROOT/uvm_tb/formal"
 OUT_DIR="$REPO_ROOT/out"
 
-cd "$FORMAL_DIR"
+# Pre-flight: ensure oss-cad-suite environment is active
+if ! command -v sby &>/dev/null; then
+  echo "[WARN] sby not found. Attempting to source ~/oss-cad-suite/environment..."
+  if [ -f "$HOME/oss-cad-suite/environment" ]; then
+    source "$HOME/oss-cad-suite/environment"
+  fi
+fi
 
 if ! command -v sby &>/dev/null; then
-  echo '{"formal_status": "SKIPPED", "reason": "sby not found"}' > "$OUT_DIR/formal_result.json"
+  echo '{"formal_status": "SKIPPED", "reason": "sby not found even after sourcing environment"}' > "$OUT_DIR/formal_result.json"
+  echo "[WARN] Formal verification SKIPPED — sby not available."
   exit 0
 fi
 
+cd "$FORMAL_DIR"
+
 sby -f verify.sby 2>&1 | tee formal_run.log
 
-if grep -q "PROVED" formal_run.log; then
+if grep -q "DONE (PASS" formal_run.log; then
   STATUS="PROVED"
-elif grep -q "FAILED" formal_run.log; then
+elif grep -q "DONE (FAIL" formal_run.log; then
   STATUS="FAILED"
 else
   STATUS="ERROR"
 fi
 
 # Extract per-property results for report
-# Pass STATUS as environment variable so it's accessible inside the heredoc
 export STATUS
 export OUT_DIR
 python3 - <<'PYEOF'

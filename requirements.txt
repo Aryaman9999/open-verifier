@@ -1,6 +1,13 @@
-cocotb==1.8.1
-pyuvm==2.8.0
-cocotb-coverage==1.1.0
-PyMuPDF==1.23.8
-pyyaml==6.0.1
-python-constraint==1.4.0
+# Open-Verifier v2 Dependency Lockdown
+# These versions are verified to work together in Windows/WSL environments
+
+# Core Verification Framework
+pyuvm>=2.8.0          # Minimum for centralized objections
+cocotb>=1.8.1         # Works with 2.1.0.dev0+ seen in this environment
+cocotb-coverage>=1.1.0 # Functional coverage support
+
+# Infrastructure & Spec Analysis
+PyYAML>=6.0.1         
+PyMuPDF>=1.23.0       
+pathlib>=1.0.1        
+setuptools>=60.0.0    # Required for pkg_resources version checks

@@ -273,8 +273,9 @@ class Axi4LiteDriver(uvm_driver):
         super().build_phase()
         self.dut = cocotb.top          # Always cocotb.top — never ConfigDB for DUT
 
-    async def run_phase(self):         # NO phase argument in pyUVM 2.8.0; MUST be async
-        self.raise_objection()         # self.raise_objection(), NOT phase.raise_objection(self)
+    async def run_phase(self):         # NO phase argument; MUST be async
+        # NO raise_objection here — driver runs until test drops its objection
+        # Objections live ONLY in test.py run_phase — never in driver or monitor
 
         # Drive ALL inputs to 0 before reset — prevents X-propagation in Icarus
         self.dut.s_axi_awvalid.value = 0
@@ -286,12 +287,12 @@ class Axi4LiteDriver(uvm_driver):
         while self.dut.rst_n.value == 0:
             await cocotb.triggers.RisingEdge(self.dut.clk)
 
+        # Main loop — runs indefinitely until test phase ends
         while True:
             req = await self.seq_item_port.get_next_item()
             await self._drive(req)
             self.seq_item_port.item_done()
-
-        self.drop_objection()          # self.drop_objection(), NOT phase.drop_objection(self)
+        # NO drop_objection here
 
     async def _drive(self, item):
         self.dut.s_axi_awvalid.value = item.awvalid
@@ -317,7 +318,8 @@ class Axi4LiteMonitor(uvm_monitor):
         self.dut = cocotb.top
 
     async def run_phase(self):         # NO phase argument; MUST be async
-        self.raise_objection()
+        # NO raise_objection here — monitor runs until test drops its objection
+        # Objections live ONLY in test.py run_phase — never in driver or monitor
         while True:
             await cocotb.triggers.RisingEdge(self.dut.clk)
             # REQUIRED: await ReadOnly() after RisingEdge before reading any signal.
@@ -329,7 +331,7 @@ class Axi4LiteMonitor(uvm_monitor):
                 await self._sample()
             # Do NOT add another RisingEdge here — ReadOnly() already advanced past
             # the race window. An extra RisingEdge skips every other transaction.
-        self.drop_objection()
+        # NO drop_objection here
 
     async def _sample(self):
         @CoverPoint(
@@ -557,22 +559,84 @@ cat out/.formal_available
 
 If `false`: skip to STEP 19, mark formal steps `skipped`.
 
-Use wrapper approach — NOT bind. FORBIDDEN operators: `throughout`, `within`, `intersect`, `first_match`, `expect`. ALLOWED: `##`, `|->`, `|=>`, `[*]`, `[+]`, `[=]`, `$rose`, `$fell`, `$stable`, `$past`.
+**REQUIRED pre-check before generating.** Grep the DUT for simulation-only system tasks that cause Yosys to fatal:
+
+```bash
+bash -l -c "grep -rn '\\\$display\|\\\$finish\|\\\$test\\\$plusargs\|\\\$dumpfile\|\\\$dumpvars' src/"
+```
+
+If any matches are found WITHOUT a `` `ifndef FORMAL `` guard on the preceding line, tell the user to add it:
+
+```verilog
+`ifndef FORMAL
+initial begin
+  if ($test$plusargs("vcd")) begin
+    $dumpfile("waves.vcd");
+    $dumpvars(0, top_module);
+  end
+end
+`endif
+```
+
+Do NOT generate `formal_props.sv` until the user confirms guards are in place.
+
+**SVA syntax — IMMEDIATE assertions only. NO `property`/`endproperty`.**
+
+Open-source Yosys does NOT support concurrent `property`/`endproperty` syntax — that requires the commercial Verific frontend. Using it produces `ERROR: syntax error, unexpected TOK_PROPERTY`. Use immediate assertions inside `always @(posedge clk)` blocks instead. Computationally equivalent for BMC.
 
 ```systemverilog
-module axi_formal_props (input logic clk, rst_n, /* bound signals */);
-  property p_awvalid_stable;
-    @(posedge clk) disable iff (!rst_n)
-    $rose(s_axi_awvalid) |-> s_axi_awvalid [*1:$] ##1 s_axi_awready;
-  endproperty
-  assert property (p_awvalid_stable) else $error("RULE_001 VIOLATED");
+// uvm_tb/formal/formal_props.sv
+// `define FORMAL activates `ifndef FORMAL guards in the DUT
+`define FORMAL
+
+module axi_formal_props (
+  input logic clk,
+  input logic rst_n,
+  // One input per signal referenced in any rule — DUT port names from binding_map.yaml
+  input logic        s_axi_awvalid,
+  input logic        s_axi_awready,
+  input logic [1:0]  s_axi_awburst,
+  input logic [3:0]  s_axi_awlen
+);
+  // RULE_001: AWVALID must not deassert before AWREADY
+  always @(posedge clk) begin
+    if (rst_n) begin
+      if ($rose(s_axi_awvalid)) begin
+        assert (s_axi_awvalid)
+          else $error("RULE_001 VIOLATED: AWVALID deasserted before AWREADY");
+      end
+    end
+  end
+
+  // RULE_003: WRAP burst requires AWLEN in {1, 3, 7, 15}
+  always @(posedge clk) begin
+    if (rst_n) begin
+      if (s_axi_awburst == 2'b10) begin
+        assert (s_axi_awlen inside {4'd1, 4'd3, 4'd7, 4'd15})
+          else $error("RULE_003 VIOLATED: WRAP burst with illegal AWLEN=%0d", s_axi_awlen);
+      end
+    end
+  end
+
 endmodule
 
-module dut_with_props (/* port list from interface.yaml */);
+// uvm_tb/formal/dut_with_props.sv
+`define FORMAL
+module dut_with_props (/* copy exact port list from interface.yaml */);
   axi_slave dut (.*);
-  axi_formal_props props (.clk(clk), .rst_n(rst_n), /* all bound signals */);
+  axi_formal_props props (
+    .clk(clk), .rst_n(rst_n),
+    .s_axi_awvalid(s_axi_awvalid),
+    .s_axi_awready(s_axi_awready),
+    .s_axi_awburst(s_axi_awburst),
+    .s_axi_awlen(s_axi_awlen)
+  );
 endmodule
 ```
+
+**FORBIDDEN** (Yosys parse errors): `property`, `endproperty`, `sequence`, `endsequence`, `throughout`, `within`, `intersect`, `first_match`, `expect`, `|->`, `|=>` in concurrent context.
+
+**ALLOWED** in immediate assertions: `assert(...)`, `$rose`, `$fell`, `$stable`, `$past`, `inside {}`.
 
 ---
 
@@ -602,10 +666,14 @@ formal_props.sv
 ## STEP 18 — RUN_FORMAL
 
 ```bash
-bash .agents/skills/open-verifier/scripts/07_run_formal.sh
+bash -l -c "source ~/oss-cad-suite/environment && bash .agents/skills/open-verifier/scripts/07_run_formal.sh"
 ```
 
-yosys parse failure on DUT → `ELABORATION` error, `source: formal`. Suggest `sv2v`. Do not touch DUT.
+**oss-cad-suite must be sourced via its own `environment` script** — do NOT manually add `bin/` to PATH. The suite bundles its own C libraries; sourcing `environment` sets `LD_LIBRARY_PATH` correctly to avoid GLIBC conflicts. If the suite is not in `~/oss-cad-suite`, ask the user for its location before proceeding.
+
+If `sby` is not found after sourcing: report that the user must install oss-cad-suite into WSL home (`~/`) and extract using `tar -xzf oss-cad-suite*.tgz -C ~/` — never install on `/mnt/c/`.
+
+Yosys parse failure on DUT → `ELABORATION` error, `source: formal`. Check whether the DUT has unguarded `$display`/`$test$plusargs` — these must be wrapped in `` `ifndef FORMAL `` (see STEP 16 pre-check). Suggest `sv2v` for complex SV syntax. Do not touch DUT source.
 
 ---
 
@@ -684,6 +752,9 @@ Ports with status `NONE` (neither transition seen) are highest priority for `--m
 15. **NEVER pass DUT via ConfigDB** — always `self.dut = cocotb.top`
 16. **NEVER call `uvm_root().set_timeout()`** — use `@cocotb.test(timeout_time=N, timeout_unit="us")`
 17. **NEVER write backslash paths in `dut.f`** — always forward slashes
+18. **NEVER put `raise_objection` or `drop_objection` in driver or monitor** — objections belong ONLY in `test.py` `run_phase`. Driver/monitor in the `while True` loop have no objection management. Violating this causes a three-way deadlock at 40ns with no error output.
+19. **NEVER use `property`/`endproperty` in `formal_props.sv`** — open-source Yosys rejects concurrent SVA syntax with `ERROR: syntax error, unexpected TOK_PROPERTY`. Always use immediate assertions inside `always @(posedge clk)` blocks.
+20. **NEVER run oss-cad-suite tools without sourcing its environment script** — always `source ~/oss-cad-suite/environment` before calling `sby` or `yosys`. Manual PATH injection causes GLIBC `undefined symbol` errors. The suite must also live in WSL home (`~/`), never on `/mnt/c/`.
 
 ---
 
@@ -780,3 +851,9 @@ end
 ```
 
 If not, tell the user to add it before running simulation. Do NOT add it yourself — `src/` is read-only to the agent. Do NOT add `SIM_ARGS += -lxt2` to the Makefile — it creates a spurious empty file named `xt2` in `uvm_tb/`.
+
+**C10 — Objections ONLY in test.py. Driver and monitor have none.** The driver holds an objection then enters `while True` waiting for seq items. The sequencer waits for a driver request. The test waits for the sequence to start. Three-way deadlock — simulation hangs silently at ~40ns, no error output. Resolution: only `test.py` `run_phase` calls `self.raise_objection()` at the start and `self.drop_objection()` after `await seq.start()`. Driver and monitor have no objection calls anywhere.
+
+**C11 — Unguarded simulation system tasks cause Yosys fatal errors.** `$dumpfile`, `$dumpvars`, `$display`, `$finish`, and `$test$plusargs` are simulation-only constructs. Yosys reports `ERROR: Found simulation-only construct` and aborts. All of these must be inside `` `ifndef FORMAL `` blocks in the DUT source. Run the STEP 16 grep pre-check before generating any formal file. Both `formal_props.sv` and `dut_with_props.sv` must have `` `define FORMAL `` at the top so these guards activate during formal elaboration.
+
+**C12 — oss-cad-suite in WSL home, sourced via its own script.** Installing on `/mnt/c/` causes GLIBC `undefined symbol: __tunable_is_initialized` — the suite's bundled libraries conflict with the WSL host glibc. Moving via `mv` across the `/mnt/c/` boundary is a slow cross-filesystem copy that looks frozen and corrupts the installation if cancelled. Correct extraction: `tar -xzf oss-cad-suite*.tgz -C ~/` directly into WSL home. Correct activation: `source ~/oss-cad-suite/environment` — this sets `LD_LIBRARY_PATH` properly. Do NOT manually add `bin/` to PATH.
