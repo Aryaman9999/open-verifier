@@ -30,3 +30,5 @@ generate_spec.py
 # Python caches
 __pycache__/
 *.pyc
+
+.vscode/
