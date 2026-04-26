@@ -69,31 +69,14 @@ rel = path.relative_to(project_root)
 path_str = str(rel).replace("\\", "/")   # e.g. "src/dummy_alu.v"
 ```
 
-**CRITICAL — `state.json` defensive initialization:** Every script that calls `update_state()` must handle a missing or malformed `state.json`. Before writing, check that the file exists and contains a valid `steps` dict. If not, create the skeleton:
+**Updating State:**
+Whenever you complete a step, you MUST update the state by calling the CLI script. Do NOT modify `state.json` directly. This avoids escaping and quoting issues.
 
-```python
-import json, pathlib
-
-STATE_PATH = pathlib.Path("out/state.json")
-
-def load_state():
-    if STATE_PATH.exists():
-        try:
-            data = json.loads(STATE_PATH.read_text())
-            if "steps" in data:
-                return data
-        except json.JSONDecodeError:
-            pass
-    # Create skeleton if missing or malformed
-    return {"schema_version": "1.0", "steps": {}}
-
-def update_state(step_name, status="complete", **kwargs):
-    state = load_state()
-    state["steps"][step_name] = {"status": status, **kwargs}
-    STATE_PATH.write_text(json.dumps(state, indent=2))
+```bash
+bash -l -c "python3 .agents/skills/open-verifier/scripts/update_state.py <step_name> --status complete"
 ```
 
-Without this, `state["steps"][step_name]` raises `KeyError: 'steps'` on a fresh checkout.
+You can also pass `--artifact <path>` and `--hash <sha256>` if a step produces a primary artifact.
 
 ---
 
@@ -175,7 +158,34 @@ Show diff on mismatch. Do not proceed until it passes.
 
 ---
 
-## STEPS 7–14 — TESTBENCH GENERATION
+## STEP 6b — FORMAL GUARD PRE-CHECK
+
+Run this immediately after the top wrapper validates and before generating any testbench file. Doing it here means simulation produces a VCD and formal elaboration is clean — both in the same run with no re-runs needed.
+
+```bash
+bash -l -c "grep -rn '\$display\|\$finish\|\$test\$plusargs\|\$dumpfile\|\$dumpvars' src/"
+```
+
+Two things must be present in the DUT source before proceeding:
+
+**Check 1 — VCD dump block.** The DUT needs an initial block for waveform output. Without it, simulation completes but `out/waves.vcd` is empty, toggle coverage is skipped, and waveform debugging is impossible:
+
+```verilog
+`ifndef FORMAL
+initial begin
+    if ($test$plusargs("vcd")) begin
+        $dumpfile("waves.vcd");
+        $dumpvars(0, <top_module_name>);
+    end
+end
+`endif
+```
+
+**Check 2 — All simulation system tasks are guarded.** Any `$display`, `$finish`, `$readmemh`, `$test$plusargs` outside a `` `ifndef FORMAL `` block will cause Yosys to abort with `ERROR: Found simulation-only construct` at STEP 18. Find them now and guard them before generating a single testbench file.
+
+**If either check fails:** Output the exact lines that need guarding. Tell the user to add the guards. Wait for confirmation. Do NOT proceed to STEP 7 until the user confirms the DUT has been updated. Do NOT edit `src/` yourself — it is read-only to the agent.
+
+**If both checks pass:** Mark `formal_guard_check` complete in `state.json` and proceed to STEP 7.
 
 **The law:**
 
