@@ -213,25 +213,28 @@ def validate_formal_props(filepath):
     errors = []
     content = read_file(filepath)
 
-    if not check_symbol(content, "assert property"):
-        errors.append({"category": "TOPOLOGY", "message": "No 'assert property' statement found", "symbol": "assert property"})
+    # Check for immediate assertion syntax — assert(...) inside always blocks
+    # Do NOT check for 'assert property' — open-source Yosys rejects concurrent SVA
+    has_assert = check_symbol(content, "assert (") or check_symbol(content, "assert(")
+    has_assume = check_symbol(content, "assume (") or check_symbol(content, "assume(")
+    if not has_assert and not has_assume:
+        errors.append({"category": "TOPOLOGY", "message": "No 'assert (...)' or 'assume (...)' immediate assertion found. Use immediate assertions inside always @(posedge clk) blocks.", "symbol": "assert/assume"})
+
+    # Negative check — FORBIDDEN syntax that Yosys rejects
+    import re
+    # Match 'property' as a keyword (not inside strings or comments)
+    if re.search(r'\bendproperty\b', content):
+        errors.append({"category": "TOPOLOGY", "message": "FORBIDDEN: 'endproperty' found — open-source Yosys rejects concurrent SVA property/endproperty syntax. Use immediate assertions inside always @(posedge clk) blocks instead.", "symbol": "endproperty"})
 
     if not check_symbol(content, "endmodule"):
         errors.append({"category": "TOPOLOGY", "message": "No 'endmodule' keyword found", "symbol": "endmodule"})
 
-    # Accept either wrapper or bind approach and report which was found
-    has_wrapper = check_symbol(content, "module dut_with_props")
-    has_bind = check_symbol(content, "bind")
-    if not has_wrapper and not has_bind:
-        errors.append({
-            "category": "TOPOLOGY",
-            "message": "Neither 'module dut_with_props' (wrapper) nor 'bind' statement found",
-            "symbol": "dut_with_props/bind"
-        })
-    else:
-        approach = "wrapper" if has_wrapper else "bind"
-        # Not an error, just informational — printed to stdout
-        print(f"[INFO] Formal approach detected: {approach}")
+    if not check_symbol(content, "always"):
+        errors.append({"category": "TOPOLOGY", "message": "No 'always' block found — immediate assertions must be inside always @(posedge clk) blocks", "symbol": "always"})
+
+    # Check for initial assume (reset initialization)
+    if not check_symbol(content, "initial assume"):
+        print("[WARN] No 'initial assume' for reset found — formal may fail on uninitialized state")
 
     return errors
 

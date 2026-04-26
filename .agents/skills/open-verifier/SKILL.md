@@ -41,6 +41,28 @@ Find the first `pending` step. That is your only task for this turn.
 
 ---
 
+## HOW TO UPDATE STATE — USE THIS EVERY TIME
+
+After completing any step, update `state.json` using the CLI script. This is the **ONLY** sanctioned method:
+
+```bash
+bash -l -c "python3 .agents/skills/open-verifier/scripts/update_state.py <step_name> --status complete"
+```
+
+Optional flags: `--artifact <path>` and `--hash <sha256>` for steps that produce primary artifacts.
+
+Examples:
+
+```bash
+bash -l -c "python3 .agents/skills/open-verifier/scripts/update_state.py env_check --status complete"
+bash -l -c "python3 .agents/skills/open-verifier/scripts/update_state.py gen_filelist --status complete --artifact out/dut.f"
+bash -l -c "python3 .agents/skills/open-verifier/scripts/update_state.py gen_formal_props --status skipped"
+```
+
+**DO NOT** write to `out/state.json` directly via `write_to_file` or `python3 -c`. Inline Python one-liners break due to Windows↔bash↔Python triple-quoting. The script handles all edge cases (missing file, malformed JSON, missing `out/` directory).
+
+---
+
 ## STEP 1 — ENV_CHECK
 
 ```bash
@@ -69,14 +91,31 @@ rel = path.relative_to(project_root)
 path_str = str(rel).replace("\\", "/")   # e.g. "src/dummy_alu.v"
 ```
 
-**Updating State:**
-Whenever you complete a step, you MUST update the state by calling the CLI script. Do NOT modify `state.json` directly. This avoids escaping and quoting issues.
+**CRITICAL — `state.json` defensive initialization:** Every script that calls `update_state()` must handle a missing or malformed `state.json`. Before writing, check that the file exists and contains a valid `steps` dict. If not, create the skeleton:
 
-```bash
-bash -l -c "python3 .agents/skills/open-verifier/scripts/update_state.py <step_name> --status complete"
+```python
+import json, pathlib
+
+STATE_PATH = pathlib.Path("out/state.json")
+
+def load_state():
+    if STATE_PATH.exists():
+        try:
+            data = json.loads(STATE_PATH.read_text())
+            if "steps" in data:
+                return data
+        except json.JSONDecodeError:
+            pass
+    # Create skeleton if missing or malformed
+    return {"schema_version": "1.0", "steps": {}}
+
+def update_state(step_name, status="complete", **kwargs):
+    state = load_state()
+    state["steps"][step_name] = {"status": status, **kwargs}
+    STATE_PATH.write_text(json.dumps(state, indent=2))
 ```
 
-You can also pass `--artifact <path>` and `--hash <sha256>` if a step produces a primary artifact.
+Without this, `state["steps"][step_name]` raises `KeyError: 'steps'` on a fresh checkout.
 
 ---
 
@@ -163,7 +202,14 @@ Show diff on mismatch. Do not proceed until it passes.
 Run this immediately after the top wrapper validates and before generating any testbench file. Doing it here means simulation produces a VCD and formal elaboration is clean — both in the same run with no re-runs needed.
 
 ```bash
-bash -l -c "grep -rn '\$display\|\$finish\|\$test\$plusargs\|\$dumpfile\|\$dumpvars' src/"
+bash -l -c "python3 .agents/skills/open-verifier/scripts/06b_formal_guard_check.py"
+```
+
+**Prefer the Python script above.** It handles escaping correctly and outputs structured JSON. The grep fallback below is fragile across PowerShell→bash→grep escaping layers:
+
+```bash
+# Fallback — may need manual escaping adjustments on Windows/WSL
+bash -l -c "grep -rn '\$display\|\$finish\|\$test\$plusargs\|\$dumpfile\|\$dumpvars\|\$readmemh' src/"
 ```
 
 Two things must be present in the DUT source before proceeding:
@@ -187,6 +233,10 @@ end
 
 **If both checks pass:** Mark `formal_guard_check` complete in `state.json` and proceed to STEP 7.
 
+---
+
+## STEPS 7–14 — TESTBENCH GENERATION
+
 **The law:**
 
 1. Re-read `out/binding_map.yaml` before writing any Python file — every time
@@ -198,23 +248,25 @@ end
 
 ### NAMING CONVENTION
 
-Derive from `protocol_id`: `axi4_lite` → `Axi4Lite`.
+Derive `ProtocolName` from `protocol_id` in `protocol_rules.yaml` at generation time. Convert snake_case to PascalCase: `axi4_lite` → `Axi4Lite`, `i2c_master` → `I2cMaster`, `spi` → `Spi`. Never hardcode a protocol name — always derive it fresh from the YAML.
 
-| File            | Class name                                             |
-| --------------- | ------------------------------------------------------ |
-| `seq_item.py`   | `Axi4LiteSeqItem`                                      |
-| `sequences.py`  | `Axi4LiteBaseSequence`, `Axi4LiteRule001Sequence`, ... |
-| `driver.py`     | `Axi4LiteDriver`                                       |
-| `monitor.py`    | `Axi4LiteMonitor`                                      |
-| `scoreboard.py` | `Axi4LiteScoreboard`                                   |
-| `env.py`        | `Axi4LiteEnv`                                          |
-| `test.py`       | `Axi4LiteBaseTest`                                     |
+| File            | Class name pattern                                                 |
+| --------------- | ------------------------------------------------------------------ |
+| `seq_item.py`   | `{ProtocolName}SeqItem`                                            |
+| `sequences.py`  | `{ProtocolName}BaseSequence`, `{ProtocolName}Rule001Sequence`, ... |
+| `driver.py`     | `{ProtocolName}Driver`                                             |
+| `monitor.py`    | `{ProtocolName}Monitor`                                            |
+| `scoreboard.py` | `{ProtocolName}Scoreboard`                                         |
+| `env.py`        | `{ProtocolName}Env`                                                |
+| `test.py`       | `{ProtocolName}BaseTest`                                           |
 
-All imports are bare: `from seq_item import Axi4LiteSeqItem`. No `__init__.py`. Not a package.
+All imports are bare: `from seq_item import {ProtocolName}SeqItem`. No `__init__.py`. Not a package.
 
 ---
 
 ## STEP 7 — GEN_SEQ_ITEM (`uvm_tb/seq_item.py`)
+
+Before writing: read `protocol_rules.yaml` to get `protocol_id` → derive `{ProtocolName}`. Read `binding_map.yaml` to get every signal name — one field per signal.
 
 ```python
 import random
@@ -228,21 +280,21 @@ SEED = int(os.environ.get("COCOTB_RANDOM_SEED", 0))
 random.seed(SEED)
 
 @uvm_object_utils
-class Axi4LiteSeqItem(uvm_sequence_item):
-    def __init__(self, name="Axi4LiteSeqItem"):
+class {ProtocolName}SeqItem(uvm_sequence_item):
+    def __init__(self, name="{ProtocolName}SeqItem"):
         super().__init__(name)
-        # One field per signal in binding_map.yaml — default 0
-        self.awvalid = 0
-        self.awaddr  = 0
-        self.awlen   = 0
-        self.awburst = 0
+        # ONE field per signal in binding_map.yaml — derived at generation time
+        # Default all fields to 0. Use spec signal names as field names (not DUT port names).
+        # Example for a 3-signal protocol: self.valid=0, self.data=0, self.addr=0
+        # DO NOT hardcode AXI or any other protocol signal names here
 
     def randomize(self):
+        # Generate one if/continue guard per constraint_guard in protocol_rules.yaml
+        # Rejection sampling — try up to 1000 combinations
         for _ in range(1000):
-            self.awlen   = random.randint(0, 15)
-            self.awburst = random.choice([0, 1, 2])
-            if self.awburst == 2 and self.awlen not in [1, 3, 7, 15]:
-                continue
+            # Randomize each field using its valid_range from protocol_rules.yaml
+            # Example: self.burst = random.choice(valid_range)
+            # Example guard: if self.burst == WRAP and self.len not in [1,3,7,15]: continue
             return True
         raise ConstraintFailure(f"{self.__class__.__name__}: unsatisfiable after 1000 attempts")
 ```
@@ -253,61 +305,87 @@ class Axi4LiteSeqItem(uvm_sequence_item):
 
 ```python
 from pyuvm import *
-from seq_item import Axi4LiteSeqItem
+from seq_item import {ProtocolName}SeqItem   # substitute derived name
 
 @uvm_object_utils
-class Axi4LiteBaseSequence(uvm_sequence):
+class {ProtocolName}BaseSequence(uvm_sequence):
     async def body(self):
         for _ in range(self.num_items):
-            item = Axi4LiteSeqItem("item")
+            item = {ProtocolName}SeqItem("item")
             await self.start_item(item)
             item.randomize()
             await self.finish_item(item)
+
+# Generate one subclass per rule of type 'handshake' or 'constraint' in protocol_rules.yaml
+# Each subclass overrides body() to exercise that specific rule scenario
 ```
 
 ---
 
 ## STEP 9 — GEN_DRIVER (`uvm_tb/driver.py`)
 
+Before writing: read `binding_map.yaml` to identify:
+
+- All input signal names (to drive to 0 before reset)
+- The clock port name
+- The reset port name and active level (`active_level: low` → assert=0, release=1)
+- The valid signal(s) and corresponding ready signal(s) for handshake
+
 ```python
 import cocotb
+from cocotb.triggers import RisingEdge, ReadOnly
 from pyuvm import *
-from seq_item import Axi4LiteSeqItem
+from seq_item import {ProtocolName}SeqItem
 
 @uvm_component_utils
-class Axi4LiteDriver(uvm_driver):
+class {ProtocolName}Driver(uvm_driver):
     def __init__(self, name, parent):
         super().__init__(name, parent)
 
-    def build_phase(self):             # NO phase argument in pyUVM 2.8.0
+    def build_phase(self):
         super().build_phase()
-        self.dut = cocotb.top          # Always cocotb.top — never ConfigDB for DUT
+        self.dut = cocotb.top
 
-    async def run_phase(self):         # NO phase argument; MUST be async
-        # NO raise_objection here — driver runs until test drops its objection
-        # Objections live ONLY in test.py run_phase — never in driver or monitor
+    async def run_phase(self):
+        # NO raise_objection — driver runs until test drops its objection
 
-        # Drive ALL inputs to 0 before reset — prevents X-propagation in Icarus
-        self.dut.s_axi_awvalid.value = 0
-        self.dut.s_axi_wvalid.value  = 0
-        # ... every input signal from binding_map.yaml set to 0 here
+        # Drive ALL input signals to 0 before reset
+        # Substitute real port names from binding_map.yaml
+        self.dut.<input_signal_1>.value = 0
+        self.dut.<input_signal_2>.value = 0
+        # ... every input signal from binding_map.yaml
 
         # Wait for reset release
-        await cocotb.triggers.RisingEdge(self.dut.clk)
-        while self.dut.rst_n.value == 0:
-            await cocotb.triggers.RisingEdge(self.dut.clk)
+        # Substitute clock and reset port names from binding_map.yaml
+        # active_level: low → wait while reset == 0; active_level: high → wait while reset == 1
+        await RisingEdge(self.dut.<clk>)
+        while self.dut.<rst>.value == <reset_assert_value>:
+            await RisingEdge(self.dut.<clk>)
 
-        # Main loop — runs indefinitely until test phase ends
         while True:
             req = await self.seq_item_port.get_next_item()
             await self._drive(req)
             self.seq_item_port.item_done()
-        # NO drop_objection here
+        # NO drop_objection
 
     async def _drive(self, item):
-        self.dut.s_axi_awvalid.value = item.awvalid
-        self.dut.s_axi_awaddr.value  = item.awaddr
-        await cocotb.triggers.RisingEdge(self.dut.clk)
+        # Step 1: Assert VALID and drive all data signals
+        # Substitute signal names from binding_map.yaml
+        self.dut.<valid_signal>.value = 1
+        self.dut.<data_signal>.value  = item.<data_field>
+        # ... all other signals
+
+        # Step 2: Hold VALID until READY — REQUIRED for any valid/ready protocol
+        # Once VALID is asserted it MUST NOT be deasserted until READY is seen
+        # Deasserting VALID early is a protocol violation — fix here, never in DUT
+        await ReadOnly()
+        while not self.dut.<ready_signal>.value:
+            await RisingEdge(self.dut.<clk>)
+            await ReadOnly()
+
+        # Step 3: Deassert after handshake completes
+        await RisingEdge(self.dut.<clk>)
+        self.dut.<valid_signal>.value = 0
 ```
 
 ---
@@ -316,52 +394,51 @@ class Axi4LiteDriver(uvm_driver):
 
 ```python
 import cocotb
+from cocotb.triggers import RisingEdge, ReadOnly
 from pyuvm import *
 from cocotb_coverage.coverage import CoverPoint, CoverCross
-from seq_item import Axi4LiteSeqItem
+from seq_item import {ProtocolName}SeqItem
 
 @uvm_component_utils
-class Axi4LiteMonitor(uvm_monitor):
-    def build_phase(self):             # NO phase argument
+class {ProtocolName}Monitor(uvm_monitor):
+    def build_phase(self):
         super().build_phase()
         self.ap  = uvm_analysis_port("ap", self)
         self.dut = cocotb.top
 
-    async def run_phase(self):         # NO phase argument; MUST be async
-        # NO raise_objection here — monitor runs until test drops its objection
-        # Objections live ONLY in test.py run_phase — never in driver or monitor
+    async def run_phase(self):
+        # NO raise_objection — monitor runs until test drops its objection
         while True:
-            await cocotb.triggers.RisingEdge(self.dut.clk)
-            # REQUIRED: await ReadOnly() after RisingEdge before reading any signal.
-            # ReadOnly() waits until all delta cycles in this timestep are resolved.
-            # Reading signals at RisingEdge directly causes a race — the DUT's
-            # registered outputs may not have updated yet in the same timestep.
-            await cocotb.triggers.ReadOnly()
-            if self.dut.i_valid.value and self.dut.i_ready.value:
+            await RisingEdge(self.dut.<clk>)    # substitute clock name from binding_map.yaml
+            await ReadOnly()                      # REQUIRED — wait for delta cycles to resolve
+            # Substitute valid/ready signal names from binding_map.yaml
+            if self.dut.<valid_signal>.value and self.dut.<ready_signal>.value:
                 await self._sample()
-            # Do NOT add another RisingEdge here — ReadOnly() already advanced past
-            # the race window. An extra RisingEdge skips every other transaction.
-        # NO drop_objection here
+            # Do NOT add another RisingEdge here — skips every other transaction
+        # NO drop_objection
 
     async def _sample(self):
+        # Generate one @CoverPoint per coverage directive in protocol_rules.yaml
+        # Use the coverpoint name, bins, and bin labels from the YAML — not from AXI knowledge
         @CoverPoint(
-            "axi4lite.awburst",
+            "<protocol_id>.<signal_name>",   # e.g. "i2c.start_condition"
             xf=lambda x: x,
-            bins=list(range(3)),
-            bins_labels=["FIXED", "INCR", "WRAP"]
+            bins=<bins_from_protocol_rules>,
+            bins_labels=<labels_from_protocol_rules>
         )
-        async def _sample_awburst(awburst):
+        async def _sample_signal(val):
             pass
-        await _sample_awburst(int(self.dut.s_axi_awburst.value))
+        await _sample_signal(int(self.dut.<sampled_signal>.value))
 
-        item = Axi4LiteSeqItem("monitored")
-        item.awvalid = int(self.dut.s_axi_awvalid.value)
-        item.awburst = int(self.dut.s_axi_awburst.value)
-        item.awlen   = int(self.dut.s_axi_awlen.value)
+        item = {ProtocolName}SeqItem("monitored")
+        # Populate item fields from DUT signal values
+        # Substitute field names (spec names) and port names (DUT names) from binding_map.yaml
+        item.<spec_signal_1> = int(self.dut.<dut_port_1>.value)
+        item.<spec_signal_2> = int(self.dut.<dut_port_2>.value)
         self.ap.write(item)
 ```
 
-**Sampling caution:** Use `ReadOnly()` after `RisingEdge` to avoid the timestep race — see monitor template above. Do NOT add a second `RisingEdge` after sampling; that skips every other transaction.
+**Sampling caution:** Use `ReadOnly()` after `RisingEdge` to avoid the timestep race. Do NOT add a second `RisingEdge` after sampling; that skips every other transaction.
 
 ---
 
@@ -375,10 +452,10 @@ class Axi4LiteMonitor(uvm_monitor):
 
 ```python
 from pyuvm import *
-from seq_item import Axi4LiteSeqItem
+from seq_item import {ProtocolName}SeqItem   # substitute derived name
 
 @uvm_component_utils
-class Axi4LiteScoreboard(uvm_component):
+class {ProtocolName}Scoreboard(uvm_component):
     def build_phase(self):
         super().build_phase()
         self.analysis_export = uvm_analysis_export("analysis_export", self)
@@ -388,11 +465,11 @@ class Axi4LiteScoreboard(uvm_component):
         self._check(item)
 
     def _check(self, item):
-        # raise AssertionError — UVMFatalError does not exist in pyUVM
-        if item.awburst == 2 and item.awlen not in [1, 3, 7, 15]:
-            raise AssertionError(
-                f"RULE_003 VIOLATED: WRAP burst with illegal AWLEN={item.awlen}"
-            )
+        # Generate one assertion per rule of type 'constraint' or 'handshake'
+        # in protocol_rules.yaml — derived at generation time, not hardcoded
+        # Use raise AssertionError — UVMFatalError does not exist in pyUVM
+        # Example pattern: if item.<field> violates <rule_condition>: raise AssertionError(...)
+        pass
 ```
 
 **Template B — registered DUT with N-cycle latency (two analysis ports, one queue):**
@@ -401,14 +478,13 @@ The monitor must use two separate analysis ports — one that fires when inputs 
 
 ```python
 from pyuvm import *
-from seq_item import Axi4LiteSeqItem
+from seq_item import {ProtocolName}SeqItem
 from collections import deque
 
 @uvm_component_utils
-class Axi4LiteScoreboard(uvm_component):
+class {ProtocolName}Scoreboard(uvm_component):
     def build_phase(self):
         super().build_phase()
-        # Two exports — connect to monitor's input_ap and output_ap respectively
         self.input_export  = uvm_analysis_export("input_export", self)
         self.output_export = uvm_analysis_export("output_export", self)
         self.input_export.write  = self.write_input   # explicit bind
@@ -416,18 +492,17 @@ class Axi4LiteScoreboard(uvm_component):
         self.pending = deque()
 
     def write_input(self, item):
-        # Fired by monitor when input handshake is observed
         self.pending.append(item)
 
     def write_output(self, item):
-        # Fired by monitor when output is valid — compare against oldest pending input
         if not self.pending:
             raise AssertionError("Output received with no pending input in queue")
         expected = self.pending.popleft()
         self._check(expected, item)
 
     def _check(self, inp, out):
-        # Compare inp fields against out fields per protocol_rules.yaml
+        # Compare inp fields against out fields per protocol_rules.yaml rules
+        # Derive field names from binding_map.yaml — not from AXI or any prior DUT
         pass
 ```
 
@@ -448,20 +523,20 @@ And the monitor must declare both ports in `build_phase` and write to each at th
 
 ```python
 from pyuvm import *
-from driver import Axi4LiteDriver
-from monitor import Axi4LiteMonitor
-from scoreboard import Axi4LiteScoreboard
+from driver import {ProtocolName}Driver
+from monitor import {ProtocolName}Monitor
+from scoreboard import {ProtocolName}Scoreboard
 
 @uvm_component_utils
-class Axi4LiteEnv(uvm_env):
+class {ProtocolName}Env(uvm_env):
     def build_phase(self):             # NO phase argument
         super().build_phase()
-        self.driver     = Axi4LiteDriver.create("driver", self)
-        self.monitor    = Axi4LiteMonitor.create("monitor", self)
-        self.scoreboard = Axi4LiteScoreboard.create("scoreboard", self)
+        self.driver     = {ProtocolName}Driver.create("driver", self)
+        self.monitor    = {ProtocolName}Monitor.create("monitor", self)
+        self.scoreboard = {ProtocolName}Scoreboard.create("scoreboard", self)
         self.sequencer  = uvm_sequencer.create("sequencer", self)
 
-    def connect_phase(self):           # NO phase argument
+    def connect_phase(self):
         self.driver.seq_item_port.connect(self.sequencer.seq_item_export)
         self.monitor.ap.connect(self.scoreboard.analysis_export)
 ```
@@ -470,68 +545,74 @@ class Axi4LiteEnv(uvm_env):
 
 ## STEP 13 — GEN_TEST (`uvm_tb/test.py`)
 
+Before writing: read `binding_map.yaml` to get:
+
+- Clock port name and period (default 10ns if not specified)
+- Reset port name and active level (`active_level: low` → assert=0; `active_level: high` → assert=1)
+
 ```python
 import cocotb
 from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge
 from pyuvm import *
-from env import Axi4LiteEnv
-from sequences import Axi4LiteBaseSequence
+from env import {ProtocolName}Env
+from sequences import {ProtocolName}BaseSequence
 
+# Scale timeout to: num_items × clock_period × max_protocol_latency × safety_margin
 @cocotb.test(timeout_time=500, timeout_unit="us")
 async def run_test(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    # Substitute clock port name from binding_map.yaml
+    cocotb.start_soon(Clock(dut.<clk>, 10, units="ns").start())
 
-    # VCD dump — do NOT rely on +vcd_file plusarg alone.
-    # Icarus requires $dumpfile/$dumpvars in the DUT, or use cocotb's built-in:
-    # cocotb.simulator.set_command_line_args("-lxt2") is Icarus-only alternative.
-    # Simplest cross-platform approach: use COCOTB_WAVE_FILE env var or check
-    # that DUT has an initial dump block. Warn the user if neither is present.
+    # Do NOT use ConfigDB for DUT handle — components use cocotb.top
 
-    # Do NOT use ConfigDB for DUT handle in pyUVM 2.x
-    # Components access DUT via cocotb.top directly
-
-    dut.rst_n.value = 0
+    # Reset — substitute port name and assert/release values from binding_map.yaml
+    # active_level: low  → assert=0, release=1
+    # active_level: high → assert=1, release=0
+    dut.<rst>.value = <reset_assert_value>
     for _ in range(5):
-        await cocotb.triggers.RisingEdge(dut.clk)
-    dut.rst_n.value = 1
+        await RisingEdge(dut.<clk>)
+    dut.<rst>.value = <reset_release_value>
 
-    await uvm_root().run_test("Axi4LiteBaseTest")
+    await uvm_root().run_test("{ProtocolName}BaseTest")
 
 @uvm_component_utils
-class Axi4LiteBaseTest(uvm_test):
-    def build_phase(self):             # NO phase argument in pyUVM 2.8.0
+class {ProtocolName}BaseTest(uvm_test):
+    def build_phase(self):
         super().build_phase()
-        self.env = Axi4LiteEnv.create("env", self)
-        # uvm_root().set_timeout() does NOT exist — timeout via @cocotb.test above
+        self.env = {ProtocolName}Env.create("env", self)
 
-    async def run_phase(self):         # NO phase argument; MUST be async
-        self.raise_objection()         # self.raise_objection(), not phase.raise_objection
-        seq = Axi4LiteBaseSequence("base_seq")
+    async def run_phase(self):
+        self.raise_objection()
+        seq = {ProtocolName}BaseSequence("base_seq")
         seq.num_items = 100
         await seq.start(self.env.sequencer)
-        self.drop_objection()          # self.drop_objection(), not phase.drop_objection
+        self.drop_objection()
 ```
 
 ---
 
 ## STEP 14 — GEN_MAKEFILE (`uvm_tb/Makefile`)
 
+Before writing: read `out/interface.yaml` and extract the `top_module` field. This is the value for `TOPLEVEL` — never hardcode `dummy_alu` or any other module name.
+
 ```makefile
-TOPLEVEL      = dummy_alu        # must exactly match top_module in out/interface.yaml
+# TOPLEVEL: read top_module from out/interface.yaml — substitute at generation time
+TOPLEVEL      = <top_module from interface.yaml>
 TOPLEVEL_LANG = verilog
 SIM           = icarus
-MODULE        = test             # basename of test.py only — no path, no .py
+MODULE        = test
 
 COCOTB_RANDOM_SEED ?= $(shell python3 -c "import time; print(int(time.time()))")
 export COCOTB_RANDOM_SEED
 $(info [open-verifier] Seed: $(COCOTB_RANDOM_SEED))
 
-# dut.f contains project-root-relative paths (e.g. src/dummy_alu.v)
+# dut.f contains project-root-relative paths (e.g. src/axil_ram.v)
 # Prepend ../ to make them relative to uvm_tb/ where make runs.
 # Do NOT use absolute paths — spaces in the user's home directory break GNU Make.
 VERILOG_SOURCES := $(addprefix ../, $(shell grep -v '^\s*$$' ../out/dut.f | grep -v '^\s*\#'))
 
-# Parameter injection — one line per entry in interface.yaml parameters
+# Parameter injection — one line per entry in interface.yaml parameters section
 # COMPILE_ARGS += -P$(TOPLEVEL).DATA_WIDTH=32
 
 COMPILE_ARGS += -DCOCOTB_RESOLVE_X=ZEROS
@@ -572,7 +653,13 @@ If `false`: skip to STEP 19, mark formal steps `skipped`.
 **REQUIRED pre-check before generating.** Grep the DUT for simulation-only system tasks that cause Yosys to fatal:
 
 ```bash
-bash -l -c "grep -rn '\\\$display\|\\\$finish\|\\\$test\\\$plusargs\|\\\$dumpfile\|\\\$dumpvars' src/"
+bash -l -c "python3 .agents/skills/open-verifier/scripts/06b_formal_guard_check.py"
+```
+
+Fallback (fragile on Windows/WSL):
+
+```bash
+bash -l -c "grep -rn '\$display\|\$finish\|\$test\$plusargs\|\$dumpfile\|\$dumpvars\|\$readmemh' src/"
 ```
 
 If any matches are found WITHOUT a `` `ifndef FORMAL `` guard on the preceding line, tell the user to add it:
@@ -594,36 +681,58 @@ Do NOT generate `formal_props.sv` until the user confirms guards are in place.
 
 Open-source Yosys does NOT support concurrent `property`/`endproperty` syntax — that requires the commercial Verific frontend. Using it produces `ERROR: syntax error, unexpected TOK_PROPERTY`. Use immediate assertions inside `always @(posedge clk)` blocks instead. Computationally equivalent for BMC.
 
+**Assume vs Assert — critical for slave DUTs:**
+
+- **Master-driven inputs** (signals the testbench/master controls, e.g. VALID, ADDR, DATA): use `assume` — constrain the input space
+- **Slave-driven outputs** (signals the DUT produces, e.g. READY, RESP): use `assert` — check the DUT's behavior
+- Getting this backwards causes false failures: asserting an input signal "fails" because the solver can set inputs to any value
+
+**Reset initialization — REQUIRED:**
+
+Formal tools explore ALL states including uninitialized garbage. Without an initial reset assumption, the very first assertion fires on random register values. Read `binding_map.yaml` to determine reset polarity:
+
+- `reset_active_level: high` → `initial assume (<rst>);`
+- `reset_active_level: low` → `initial assume (!<rst_n>);`
+
 ```systemverilog
 // uvm_tb/formal/formal_props.sv
-// `define FORMAL activates `ifndef FORMAL guards in the DUT
 `define FORMAL
 
-module axi_formal_props (
-  input logic clk,
-  input logic rst_n,
+module {protocol_name}_formal_props (
+  // Derive module name from protocol_id in protocol_rules.yaml
+  input logic <clk>,          // clock port name from binding_map.yaml
+  input logic <rst>,          // reset port name from binding_map.yaml
   // One input per signal referenced in any rule — DUT port names from binding_map.yaml
-  input logic        s_axi_awvalid,
-  input logic        s_axi_awready,
-  input logic [1:0]  s_axi_awburst,
-  input logic [3:0]  s_axi_awlen
+  input logic        <valid_signal>,
+  input logic        <ready_signal>,
+  input logic [W:0]  <data_signal>
+  // ... all signals referenced in protocol_rules.yaml formal_property fields
 );
-  // RULE_001: AWVALID must not deassert before AWREADY
-  always @(posedge clk) begin
-    if (rst_n) begin
-      if ($rose(s_axi_awvalid)) begin
-        assert (s_axi_awvalid)
-          else $error("RULE_001 VIOLATED: AWVALID deasserted before AWREADY");
+
+  // Reset initialization — derive polarity from binding_map.yaml
+  // active_level: high → initial assume (<rst>);
+  // active_level: low  → initial assume (!<rst_n>);
+  initial assume (<rst_or_not_rst_n>);
+
+  // Generate one always block per rule in protocol_rules.yaml where formal_property != null
+  // Master-driven signals → assume; Slave-driven signals → assert
+
+  // Example: handshake stability rule (master input — use assume)
+  always @(posedge <clk>) begin
+    if (<not_in_reset>) begin
+      if ($past(<valid_signal>) && !$past(<ready_signal>) && !$past(<rst>)) begin
+        assume (<valid_signal>);
+          // VALID must not deassert before READY — protocol constraint on master
       end
     end
   end
 
-  // RULE_003: WRAP burst requires AWLEN in {1, 3, 7, 15}
-  always @(posedge clk) begin
-    if (rst_n) begin
-      if (s_axi_awburst == 2'b10) begin
-        assert (s_axi_awlen inside {4'd1, 4'd3, 4'd7, 4'd15})
-          else $error("RULE_003 VIOLATED: WRAP burst with illegal AWLEN=%0d", s_axi_awlen);
+  // Example: response rule (slave output — use assert)
+  always @(posedge <clk>) begin
+    if (<not_in_reset>) begin
+      if ($past(<slave_valid>) && !$past(<slave_ready>) && !$past(<rst>)) begin
+        assert (<slave_valid>);
+          // DUT must hold its VALID until READY — assert checks DUT behavior
       end
     end
   end
@@ -633,13 +742,14 @@ endmodule
 // uvm_tb/formal/dut_with_props.sv
 `define FORMAL
 module dut_with_props (/* copy exact port list from interface.yaml */);
-  axi_slave dut (.*);
-  axi_formal_props props (
-    .clk(clk), .rst_n(rst_n),
-    .s_axi_awvalid(s_axi_awvalid),
-    .s_axi_awready(s_axi_awready),
-    .s_axi_awburst(s_axi_awburst),
-    .s_axi_awlen(s_axi_awlen)
+  // Substitute top_module from interface.yaml
+  <top_module> dut (.*);
+  {protocol_name}_formal_props props (
+    .<clk>(<clk>), .<rst>(<rst>),
+    .<valid_signal>(<valid_signal>),
+    .<ready_signal>(<ready_signal>),
+    .<data_signal>(<data_signal>)
+    // ... one port per signal referenced in any formal rule
   );
 endmodule
 ```
@@ -652,10 +762,27 @@ endmodule
 
 ## STEP 17 — GEN_SBY_CONFIG (`uvm_tb/formal/verify.sby`)
 
+**Choose between BMC and K-induction before writing.** The choice affects whether formal can complete on this DUT.
+
+**Use `mode bmc` (Bounded Model Checking) when:**
+
+- The DUT has no large memory arrays (ADDR_WIDTH ≤ 8 or total state bits < 1000)
+- You want to find bugs within N cycles
+- Properties are safety properties with short violation witnesses
+
+**Use `mode prove` (K-induction) when:**
+
+- The DUT has parameterized memories or large state (ADDR_WIDTH > 8)
+- BMC timed out on a previous run
+- Properties are invariants that hold for all reachable states
+- K-induction can prove unbounded correctness even on designs where BMC times out
+
+**Memory DUT parameter reduction:** For any DUT with a memory array, formal with full-size memory is intractable. Inject a reduced parameter into the sby script to make the state space manageable. The handshake properties do not depend on memory depth — proving them on a 16-address memory proves them on a 65536-address memory.
+
 ```
 [options]
-mode bmc
-depth 50
+mode prove          # K-induction for memory DUTs — change to bmc for bug-hunting
+depth 20            # K-induction needs smaller depth than BMC
 
 [engines]
 smtbmc z3
@@ -664,12 +791,17 @@ smtbmc z3
 read -sv dut_with_props.sv
 read -sv formal_props.sv
 read -sv -f ../../../out/dut.f
+# For memory DUTs: inject reduced address width to make state space tractable
+# Substitute parameter name from interface.yaml parameters section
+chparam -set ADDR_WIDTH 4   # reduces 65536-entry RAM to 16 entries — properties still valid
 prep -top dut_with_props
 
 [files]
 dut_with_props.sv
 formal_props.sv
 ```
+
+**Decision rule:** Check `out/interface.yaml` parameters section. If any parameter contains `ADDR`, `DEPTH`, `SIZE`, or `MEM` and its value implies more than ~256 entries, use `mode prove` with `chparam` reduction. If no memory parameters exist, use `mode bmc depth 50`.
 
 ---
 
@@ -715,15 +847,15 @@ The appended section format:
 ```markdown
 ## Section 5 — Toggle Coverage
 
-| Port          | Direction | Width | 0→1 | 1→0 | Status  |
-| ------------- | --------- | ----- | --- | --- | ------- |
-| clk           | input     | 1     | ✓   | ✓   | FULL    |
-| rst_n         | input     | 1     | ✓   | ✓   | FULL    |
-| s_axi_awvalid | input     | 1     | ✓   | ✓   | FULL    |
-| s_axi_awready | output    | 1     | ✓   | ✗   | PARTIAL |
-| s_axi_awdata  | input     | 32    | ✓   | ✓   | FULL    |
+| Port       | Direction | Width | 0→1 | 1→0 | Status  |
+| ---------- | --------- | ----- | --- | --- | ------- |
+| clk        | input     | 1     | ✓   | ✓   | FULL    |
+| rst        | input     | 1     | ✓   | ✓   | FULL    |
+| data_valid | input     | 1     | ✓   | ✓   | FULL    |
+| data_ready | output    | 1     | ✓   | ✗   | PARTIAL |
+| data_in    | input     | 32    | ✓   | ✓   | FULL    |
 
-**Untoggled ports:** s_axi_awready (missing 1→0)
+**Untoggled ports:** data_ready (missing 1→0)
 **Toggle coverage:** 9/10 transitions (90%)
 ```
 
@@ -733,13 +865,14 @@ Ports with status `NONE` (neither transition seen) are highest priority for `--m
 
 ## ERROR TAXONOMY
 
-| Category            | `source`      | Recoverable | Action                                    |
-| ------------------- | ------------- | ----------- | ----------------------------------------- |
-| `ELABORATION`       | sim or formal | NO          | Report, stop                              |
-| `TOPOLOGY`          | sim           | YES ×3      | Fix symbol, regenerate file               |
-| `ASSERTION_FAILURE` | sim or formal | NO          | Finding — record, continue                |
-| `TIMEOUT`           | sim           | YES ×3      | Check `drop_objection()`, regen `test.py` |
-| `COVERAGE_MISS`     | sim           | NO          | Record, suggest `--mode add-sequence`     |
+| Category            | `source`      | Recoverable | Action                                                                                                                                                             |
+| ------------------- | ------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ELABORATION`       | sim or formal | NO          | Report, stop                                                                                                                                                       |
+| `TOPOLOGY`          | sim           | YES ×3      | Fix symbol, regenerate file                                                                                                                                        |
+| `ASSERTION_FAILURE` | sim or formal | NO          | Finding — record, continue                                                                                                                                         |
+| `TIMEOUT`           | sim           | YES ×3      | Check `drop_objection()`, regen `test.py`                                                                                                                          |
+| `FORMAL_TIMEOUT`    | formal        | YES ×1      | Switch `verify.sby` from `mode bmc` to `mode prove`; add `chparam` to reduce memory parameters; if still timing out after both, document as state-space limitation |
+| `COVERAGE_MISS`     | sim           | NO          | Record, suggest `--mode add-sequence`                                                                                                                              |
 
 ---
 
@@ -765,6 +898,9 @@ Ports with status `NONE` (neither transition seen) are highest priority for `--m
 18. **NEVER put `raise_objection` or `drop_objection` in driver or monitor** — objections belong ONLY in `test.py` `run_phase`. Driver/monitor in the `while True` loop have no objection management. Violating this causes a three-way deadlock at 40ns with no error output.
 19. **NEVER use `property`/`endproperty` in `formal_props.sv`** — open-source Yosys rejects concurrent SVA syntax with `ERROR: syntax error, unexpected TOK_PROPERTY`. Always use immediate assertions inside `always @(posedge clk)` blocks.
 20. **NEVER run oss-cad-suite tools without sourcing its environment script** — always `source ~/oss-cad-suite/environment` before calling `sby` or `yosys`. Manual PATH injection causes GLIBC `undefined symbol` errors. The suite must also live in WSL home (`~/`), never on `/mnt/c/`.
+21. **NEVER hardcode signal names from memory or prior DUTs** — every signal name in every generated file must come from reading `binding_map.yaml` at generation time. If a signal name from a previous run appears in a new file, that is a contamination error.
+22. **NEVER write to `out/state.json` directly** — always use `update_state.py` via the command in "HOW TO UPDATE STATE". Direct writes via `write_to_file` or `python3 -c` risk JSON corruption and quoting failures.
+23. **NEVER use inline `python3 -c '...'` for state updates** — nested quoting across PowerShell→bash→Python breaks every time. The `update_state.py` script exists to eliminate this failure mode.
 
 ---
 
@@ -867,3 +1003,23 @@ If not, tell the user to add it before running simulation. Do NOT add it yoursel
 **C11 — Unguarded simulation system tasks cause Yosys fatal errors.** `$dumpfile`, `$dumpvars`, `$display`, `$finish`, and `$test$plusargs` are simulation-only constructs. Yosys reports `ERROR: Found simulation-only construct` and aborts. All of these must be inside `` `ifndef FORMAL `` blocks in the DUT source. Run the STEP 16 grep pre-check before generating any formal file. Both `formal_props.sv` and `dut_with_props.sv` must have `` `define FORMAL `` at the top so these guards activate during formal elaboration.
 
 **C12 — oss-cad-suite in WSL home, sourced via its own script.** Installing on `/mnt/c/` causes GLIBC `undefined symbol: __tunable_is_initialized` — the suite's bundled libraries conflict with the WSL host glibc. Moving via `mv` across the `/mnt/c/` boundary is a slow cross-filesystem copy that looks frozen and corrupts the installation if cancelled. Correct extraction: `tar -xzf oss-cad-suite*.tgz -C ~/` directly into WSL home. Correct activation: `source ~/oss-cad-suite/environment` — this sets `LD_LIBRARY_PATH` properly. Do NOT manually add `bin/` to PATH.
+
+**C13 — Driver must hold VALID until READY is seen.** Once the driver asserts a VALID signal, it MUST NOT deassert it until the corresponding READY is sampled high. Deasserting VALID early is a protocol violation — the DUT may have already latched the transaction. The driver `_drive()` method must use a `while not ready` loop with `ReadOnly()` sampling:
+
+```python
+# Assert VALID and drive data
+self.dut.<valid_signal>.value = 1
+self.dut.<data_signal>.value  = item.<data_field>
+
+# Hold until READY — DO NOT release VALID early
+await ReadOnly()
+while not self.dut.<ready_signal>.value:
+    await RisingEdge(self.dut.<clk>)
+    await ReadOnly()
+
+# Handshake complete — now safe to deassert
+await RisingEdge(self.dut.<clk>)
+self.dut.<valid_signal>.value = 0
+```
+
+Driving VALID for one clock and moving on regardless of READY is the single most common driver bug. It silently corrupts every transaction and produces false assertion failures in the scoreboard.
