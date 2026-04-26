@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-06_formal_guard_check.py — Scans src/ for simulation-only constructs that
+06b_formal_guard_check.py — Scans src/ for simulation-only constructs that
 cause Yosys to abort during formal elaboration.
 
 Replaces the fragile `grep -rn '\$display\|\$finish...' src/` command which
 breaks due to PowerShell→bash→grep triple-escaping on Windows/WSL.
 
-Usage: python3 06_formal_guard_check.py [--src-dir SRC_DIR]
+Usage: python3 06b_formal_guard_check.py [--src-dir SRC_DIR]
 
-Returns: exit 0 if all constructs are guarded (or none found)
-         exit 1 if unguarded constructs found
+Returns: exit 0 if all constructs are guarded AND a VCD dump block exists
+         exit 1 if unguarded constructs found OR no VCD block found
 
 Output: structured JSON to stdout
 {
@@ -25,7 +25,6 @@ Output: structured JSON to stdout
 """
 
 import json
-import os
 import re
 import sys
 import argparse
@@ -45,12 +44,14 @@ SIM_CONSTRUCTS = [
     r'\$fopen',
     r'\$fclose',
     r'\$fwrite',
+    r'\$monitor',
+    r'\$strobe',
 ]
 
 # Combined pattern
 SIM_PATTERN = re.compile('|'.join(SIM_CONSTRUCTS))
 
-# Guard pattern — looks for `ifndef FORMAL or `ifdef SIMULATION etc.
+# Guard patterns
 GUARD_PATTERN = re.compile(r'`(?:ifndef\s+FORMAL|ifdef\s+SIMULATION|ifdef\s+COCOTB_SIM)')
 
 
@@ -72,7 +73,8 @@ def scan_file(filepath):
     in_guard = False
     guard_depth = 0
 
-    for i, line in enumerate(lines, 1):
+    for i, line in enumerate(lines):
+        lineno = i + 1   # 1-based for reporting
         stripped = line.strip()
 
         # Track `ifndef FORMAL / `ifdef SIMULATION guards
@@ -84,20 +86,20 @@ def scan_file(filepath):
             if guard_depth <= 0:
                 in_guard = False
                 guard_depth = 0
-        elif stripped.startswith('`ifdef') or stripped.startswith('`ifndef'):
-            if in_guard:
-                guard_depth += 1
+        elif (stripped.startswith('`ifdef') or stripped.startswith('`ifndef')) and in_guard:
+            guard_depth += 1
 
-        # Check for VCD dump block
-        if '$dumpfile' in line and '$dumpvars' in ''.join(lines[max(0, i-3):i+3]):
+        # VCD block detection: $dumpfile inside a guard block is the correct pattern
+        # Also check for unguarded $dumpfile (still counts as present but will cause issues)
+        if '$dumpfile' in line:
             has_vcd_block = True
 
-        # Find simulation constructs
+        # Find simulation constructs on this line
         for match in SIM_PATTERN.finditer(line):
             construct = match.group(0)
             entry = {
                 "file": str(filepath),
-                "line": i,
+                "line": lineno,
                 "construct": construct,
                 "content": stripped[:120],
             }
@@ -138,14 +140,21 @@ def main():
 
     # Find all .v and .sv files
     for ext in ('*.v', '*.sv'):
-        for filepath in src_dir.rglob(ext):
+        for filepath in sorted(src_dir.rglob(ext)):
             unguarded, guarded_items, has_vcd = scan_file(filepath)
             all_unguarded.extend(unguarded)
             all_guarded.extend(guarded_items)
             if has_vcd:
                 vcd_found = True
 
-    status = "FAIL" if all_unguarded else "PASS"
+    # Check 1: unguarded constructs present?
+    has_unguarded = bool(all_unguarded)
+
+    # Check 2: VCD dump block present?
+    # Both checks must pass for exit 0 — VCD absence is a hard failure, not just a warning
+    vcd_missing = not vcd_found
+
+    status = "FAIL" if (has_unguarded or vcd_missing) else "PASS"
 
     result = {
         "status": status,
@@ -156,26 +165,34 @@ def main():
 
     print(json.dumps(result, indent=2))
 
-    if all_unguarded:
-        print(f"\n[FAIL] Found {len(all_unguarded)} unguarded simulation construct(s):", file=sys.stderr)
+    if has_unguarded:
+        print(f"\n[FAIL] Check 1 — {len(all_unguarded)} unguarded simulation construct(s):", file=sys.stderr)
         for item in all_unguarded:
             print(f"  {item['file']}:{item['line']} — {item['construct']}", file=sys.stderr)
         print("\nAdd `ifndef FORMAL guards around these lines before proceeding.", file=sys.stderr)
-        sys.exit(1)
-    else:
-        if not vcd_found:
-            print("\n[WARN] No VCD dump block ($dumpfile/$dumpvars) found in DUT.", file=sys.stderr)
-            print("  Simulation will produce an empty waves.vcd. Tell user to add:", file=sys.stderr)
-            print("  `ifndef FORMAL", file=sys.stderr)
-            print("  initial begin", file=sys.stderr)
-            print("    if ($test$plusargs(\"vcd\")) begin", file=sys.stderr)
-            print("      $dumpfile(\"waves.vcd\");", file=sys.stderr)
-            print("      $dumpvars(0, <top_module>);", file=sys.stderr)
-            print("    end", file=sys.stderr)
-            print("  end", file=sys.stderr)
-            print("  `endif", file=sys.stderr)
-        print(f"\n[PASS] All {len(all_guarded)} simulation construct(s) are properly guarded.", file=sys.stderr)
+
+    if vcd_missing:
+        print("\n[FAIL] Check 2 — No VCD dump block ($dumpfile) found in DUT.", file=sys.stderr)
+        print("  Simulation will produce an empty waves.vcd and toggle coverage will be skipped.", file=sys.stderr)
+        print("  Tell the user to add this block to the DUT source (do NOT add it yourself):\n", file=sys.stderr)
+        print("  `ifndef FORMAL", file=sys.stderr)
+        print("  initial begin", file=sys.stderr)
+        print("    if ($test$plusargs(\"vcd\")) begin", file=sys.stderr)
+        print("      $dumpfile(\"waves.vcd\");", file=sys.stderr)
+        print("      $dumpvars(0, <top_module>);", file=sys.stderr)
+        print("    end", file=sys.stderr)
+        print("  end", file=sys.stderr)
+        print("  `endif", file=sys.stderr)
+
+    if status == "PASS":
+        print(
+            f"\n[PASS] All {len(all_guarded)} simulation construct(s) are guarded "
+            f"and VCD dump block is present.",
+            file=sys.stderr
+        )
         sys.exit(0)
+    else:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
