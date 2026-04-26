@@ -21,7 +21,7 @@
 | Reads RTL source | ✅ causes design-intent bias | ❌ **Never** |
 | Spec-driven test generation | ❌ | ✅ |
 | Full UVM methodology | ❌ | ✅ pyUVM + cocotb |
-| Formal verification | ❌ | ✅ SymbiYosys BMC |
+| Formal verification | ❌ | ✅ SymbiYosys BMC + K-induction |
 | Functional coverage | ❌ | ✅ Mapped to spec rules |
 | Toggle coverage | ❌ | ✅ VCD post-analysis |
 | Single human checkpoint | ❌ | ✅ Binding map review only |
@@ -80,7 +80,7 @@ flowchart TD
     end
 
     SIM_GEN --> SIMULATE["▶️ Icarus Verilog simulation"]
-    FORMAL_GEN --> FORMAL["▶️ SymbiYosys BMC"]
+    FORMAL_GEN --> FORMAL["▶️ SymbiYosys BMC / K-induction"]
     SIMULATE --> TOGGLE["📊 Toggle Coverage - VCD analysis"]
 
     SIMULATE --> REPORT
@@ -193,7 +193,14 @@ stateDiagram-v2
     }
 
     BINDING_REVIEW --> VALIDATE_WRAPPER : binding map approved
-    VALIDATE_WRAPPER --> GEN_SEQ_ITEM
+    VALIDATE_WRAPPER --> FORMAL_GUARD_CHECK
+
+    state FORMAL_GUARD_CHECK {
+        [*] --> Scanning
+        note right of Scanning: Checks DUT for unguarded\n$display/$finish/$readmemh
+    }
+
+    FORMAL_GUARD_CHECK --> GEN_SEQ_ITEM
     GEN_SEQ_ITEM --> GEN_SEQUENCES
     GEN_SEQUENCES --> GEN_DRIVER
     GEN_DRIVER --> GEN_MONITOR
@@ -233,8 +240,11 @@ open-verifier/
 │       ├── 04_validate_step.py        ← Per-file symbol validation
 │       ├── 05_check_top_wrapper.py    ← Port diff vs interface.yaml
 │       ├── 06_view_waves.sh           ← GTKWave launcher
-│       ├── 07_run_formal.sh           ← SymbiYosys runner
-│       └── 08_toggle_coverage.py      ← VCD → toggle coverage table
+│       ├── 06b_formal_guard_check.py  ← Scans DUT for unguarded sim tasks
+│       ├── 07_run_formal.sh           ← SymbiYosys runner (180s timeout)
+│       ├── 08_toggle_coverage.py      ← VCD → toggle coverage table
+│       ├── 99_reset.sh                ← Clean all generated artifacts
+│       └── update_state.py            ← State.json CLI updater
 │
 ├── src/                               ← Your DUT files (Agent doesnt read these files)
 │
@@ -272,7 +282,11 @@ sudo apt install verilator iverilog gtkwave python3-pip -y
 pip install cocotb==1.8.1 pyuvm==2.8.0 cocotb-coverage PyMuPDF pyyaml
 
 # Optional - enables formal verification (Tier 3)
-sudo apt install symbiyosys yosys z3 -y
+# Use oss-cad-suite tarball — do NOT use apt packages (outdated, causes GLIBC conflicts)
+cd ~
+wget https://github.com/YosysHQ/oss-cad-suite-build/releases/latest/download/oss-cad-suite-linux-x64.tgz
+tar -xzf oss-cad-suite-linux-x64.tgz
+source ~/oss-cad-suite/environment   # Add to ~/.bashrc for persistence
 ```
 
 **Run**
